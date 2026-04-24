@@ -1,0 +1,24 @@
+# -------------------------------------------------------------
+# Ignore everything by default
+# -------------------------------------------------------------
+*
+
+# Allow directories to be traversed
+!*/
+
+# -------------------------------------------------------------
+# Explicitly ALLOW files we want to track
+# -------------------------------------------------------------
+!*.py
+!.gitignore
+!README.md
+
+# Explictly allow mapping memories
+!fuzzy_cache.json
+
+# -------------------------------------------------------------
+# Re-ignore matched directories or globs we actually DO want blocked
+# -------------------------------------------------------------
+.venv/
+__pycache__/
+*.py[cod]
