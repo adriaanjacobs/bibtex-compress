@@ -146,6 +146,7 @@ def main():
     parser.add_argument("-v", "--venues", help="Custom JSON map of venues.", default=None)
     parser.add_argument("--venues-bib", help="venues.bib containing @string mappings", default=None)
     parser.add_argument("--fuzzy-cache", help="JSON file to store interactive fuzzy match memory", default="fuzzy_cache.json")
+    parser.add_argument("--strict-acm", action="store_true", help="Ensure strict compliance with ACM Reference Format")
     args = parser.parse_args()
 
     input_file = args.input
@@ -176,6 +177,10 @@ def main():
                    'issue_date', 'series', 'pages', 'volume', 'number', 
                    'issue', 'articleno', 'editor', 'organization'}
                    
+    if args.strict_acm:
+        acm_required = {'doi', 'address', 'location', 'publisher', 'pages', 'articleno', 'volume', 'number', 'issue', 'numpages'}
+        DROP_FIELDS = DROP_FIELDS - acm_required
+
     for entry in bib_database.entries:
         # Collect keys to remove
         keys_to_remove = [k for k in entry if k.lower() in DROP_FIELDS]
@@ -183,7 +188,7 @@ def main():
             del entry[k]
             
         # Compress fields if they exist
-        if 'author' in entry:
+        if 'author' in entry and not args.strict_acm:
             entry['author'] = compress_authors(entry['author'])
         
         # apply abbreviations:
