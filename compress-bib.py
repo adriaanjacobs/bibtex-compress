@@ -28,7 +28,7 @@ def shorten_author(author_name):
             return f"{first_initials} {last}"
         return author_name
 
-def compress_authors(author_str):
+def compress_authors(author_str, firstname_initials=True, keep_authors=1):
     """
     Summarize author string to save space.
     e.g. 'A. B. Last and C. D. Second and E. F. Third' -> 'A. B. Last et al.'
@@ -37,10 +37,12 @@ def compress_authors(author_str):
     author_clean = author_str.replace('\n', ' ').strip('{}')
     authors = [a.strip() for a in author_clean.split(' and ')]
     
-    if len(authors) > 2:
-        first_author = shorten_author(authors[0])
-        return first_author + ' and others'
-    return ' and '.join(shorten_author(a) for a in authors)
+    if firstname_initials:
+        authors = [shorten_author(a) for a in authors]
+        
+    if keep_authors is not None and len(authors) > keep_authors:
+        return ' and '.join(authors[:keep_authors]) + ' and others'
+    return ' and '.join(authors)
 
 def compress_booktitle(title_str):
     """
@@ -147,7 +149,31 @@ def main():
     parser.add_argument("--venues-bib", help="venues.bib containing @string mappings", default=None)
     parser.add_argument("--fuzzy-cache", help="JSON file to store interactive fuzzy match memory", default="fuzzy_cache.json")
     parser.add_argument("--strict-acm", action="store_true", help="Ensure strict compliance with ACM Reference Format")
+    parser.add_argument("--firstname-initials", action="store_true", help="Use initials for first names")
+    parser.add_argument("--keep-authors", type=int, default=None, help="Keep N authors and replace the rest with et al")
     args = parser.parse_args()
+
+    firstname_initials = not args.strict_acm
+    keep_authors = None if args.strict_acm else 1
+    
+    strict_acm_idx = max([i for i, arg in enumerate(sys.argv) if arg == '--strict-acm'], default=-1)
+    fn_idx = max([i for i, arg in enumerate(sys.argv) if arg == '--firstname-initials'], default=-1)
+    
+    # Check if --keep-authors was passed (it could be passed as --keep-authors=2 or --keep-authors 2)
+    ka_idx = max([i for i, arg in enumerate(sys.argv) if arg.startswith('--keep-authors')], default=-1)
+    
+    if strict_acm_idx != -1:
+        if fn_idx != -1:
+            firstname_initials = fn_idx > strict_acm_idx
+        if ka_idx != -1 and ka_idx > strict_acm_idx:
+            keep_authors = args.keep_authors
+    else:
+        if fn_idx != -1 or ka_idx != -1:
+            firstname_initials = fn_idx != -1
+            if ka_idx != -1:
+                keep_authors = args.keep_authors
+            else:
+                keep_authors = None
 
     input_file = args.input
     output_file = args.output if args.output else f"compressed_{input_file}"
@@ -188,8 +214,9 @@ def main():
             del entry[k]
             
         # Compress fields if they exist
-        if 'author' in entry and not args.strict_acm:
-            entry['author'] = compress_authors(entry['author'])
+        if 'author' in entry:
+            if firstname_initials or keep_authors is not None:
+                entry['author'] = compress_authors(entry['author'], firstname_initials, keep_authors)
         
         # apply abbreviations:
         for field in ('booktitle', 'journal'):
