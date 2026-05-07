@@ -11,20 +11,40 @@ except ImportError:
     process = None
     fuzz = None
 
+def get_initial(name_part):
+    name_part = name_part.lstrip(" '\"`")
+    if not name_part:
+        return ""
+    # To handle LaTeX like {\'U} or \v{S}
+    if name_part.startswith('{'):
+        idx = name_part.find('}')
+        if idx != -1:
+            return name_part[:idx+1] + '.'
+    if name_part.startswith('\\'):
+        m = re.match(r'(\\[a-zA-Z]+\{[^}]*\})', name_part)
+        if m:
+            return m.group(1) + '.'
+    
+    # Otherwise find the first alphabetical character
+    for c in name_part:
+        if c.isalpha():
+            return c.upper() + '.'
+    return name_part[0].upper() + '.'
+
 def shorten_author(author_name):
     # Handle "Last, First" or "Last, Jr, First"
     if ',' in author_name:
         parts = [p.strip() for p in author_name.split(',')]
         last = parts[0]
         first = parts[-1]
-        first_initials = ' '.join(p[0].upper() + '.' for p in first.split() if p)
+        first_initials = ' '.join(get_initial(p) for p in first.split() if p)
         return f"{first_initials} {last}".strip()
     else:
         parts = author_name.split()
         if len(parts) > 1:
             last = parts[-1]
             firsts = parts[:-1]
-            first_initials = ' '.join(f[0].upper() + '.' for f in firsts if f)
+            first_initials = ' '.join(get_initial(f) for f in firsts if f)
             return f"{first_initials} {last}"
         return author_name
 
