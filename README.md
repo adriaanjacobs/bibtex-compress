@@ -6,12 +6,13 @@ Python tool to aggressively compress BibTeX files in terrible formatting require
 
 ## Features
 
-- **Field Stripping**: Deletes space-consuming, non-essential fields (`pages`, `volume`, `number`, `url`, `doi`, `isbn`, `issn`, `abstract`, `address`, `publisher`, `month`, etc.).
-- **Author Minimization**: 
-  - Automatically abbreviates first names (`Santosh Nagarakatte` → `S. Nagarakatte`).
-  - Automatically truncates papers with more than 2 authors to `FirstAuthor and others`.
+  - Option to retain ACM Reference Format required fields (like `doi`, `publisher`, `pages`, `volume`, etc.) via the `--strict-acm` flag.
+- **Author Minimization**:
+  - Automatically abbreviates first names (`Santosh Nagarakatte` → `S. Nagarakatte`). Toggleable via `--firstname-initials`.
+  - Automatically truncates author lists to 1 author (`FirstAuthor and others`) by default. Override the count via `--keep-authors N`.
+  - Disable minimization completely by using `--strict-acm` (unless explicitly overridden by the flags above).
 - **Venue Abbreviation**: 
-  - Can map standard journal/conference strings into tight acronyms.
+  - Can map standard journal/conference strings into tight acronyms via `--venues` (JSON map) or `--venues-bib` (`@string` definitions).
   - Interactive fuzzy matching powered by `thefuzz`: if a venue looks like an abbreviation target from your `venues.bib` file but isn't exact, the terminal will dynamically ask you if you want to replace it.
   - Generates a `fuzzy_cache.json` memory file so it remembers your "yes / always" decisions on future runs!
 
@@ -23,10 +24,23 @@ pip install bibtexparser thefuzz
 
 ## Usage
 
-Compress the file, using your `venues.bib` file (with `@string` acronym mappings) to guide the fuzzy finder.
+Compress the file, using your `venues.bib` file (with `@string` acronym mappings) to guide the fuzzy finder:
 
 ```bash
 python compress-bib.py your-references.bib --venues-bib venues.bib -o compressed.bib
 ```
 
-Whenever it spots a near-match, it will prompt you. If you choose `a` (always), it saves the rule to `fuzzy_cache.json`.
+### Advanced Usage
+
+You can fine-tune the strictness and style rules:
+
+```bash
+# Keep up to 3 authors, force first-name initials, and avoid deleting ACM-required fields
+python compress-bib.py your-references.bib \
+    --strict-acm \
+    --firstname-initials \
+    --keep-authors 3 \
+    -o compressed.bib
+```
+
+Arguments _after_ `--strict-acm` will override that flag. 
