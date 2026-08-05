@@ -5,11 +5,7 @@ import os
 import json
 import bibtexparser
 from bibtexparser.bwriter import BibTexWriter
-try:
-    from thefuzz import process, fuzz
-except ImportError:
-    process = None
-    fuzz = None
+from thefuzz import process, fuzz
 
 def get_initial(name_part):
     name_part = name_part.lstrip(" '\"`")
@@ -75,6 +71,14 @@ def compress_booktitle(title_str):
     t = re.sub(r'International\s+', 'Intl. ', t, flags=re.IGNORECASE)
     return t
 
+# Venues at most this long are assumed to be acronyms already, so we don't
+# bother asking the user to shorten them ('PLDI', 'ACM CCS', 'USENIX Security', ...)
+ABBREV_MAX_LEN = 20
+
+def looks_abbreviated(venue):
+    text = re.sub(r'[{}\\]', '', venue).strip()
+    return len(text) <= ABBREV_MAX_LEN
+
 def format_venue_abbr(abbrev):
     # e.g., 'acm-ccs' -> 'ACM CCS'
     # e.g., 'USENIX-Security' -> 'USENIX Security'
@@ -117,49 +121,164 @@ def load_venue_strings(venues_bib_path):
         
     return mapping
 
-def fuzzy_match_and_ask(venue, known_venues, saved_mappings, saved_mappings_file):
-    # known_venues is a dict: {full_name: abbreviation}
-    # saved_mappings is a dict: {exact_venue_in_bib: abbreviation}
-    # check exact match first:
-    if venue in saved_mappings:
-        return saved_mappings[venue]
+# --minimal keeps only what a reader needs to identify and find the work again.
+MINIMAL_FIELDS = {'author', 'title', 'year',
+                  'doi', 'url', 'howpublished', 'eprint', 'eprinttype'}
 
-    if not process:
-        return venue # gracefully degrade if thefuzz is not installed
+# ...plus whatever field happens to name the venue for that kind of entry, so a
+# @techreport keeps its institution and a @phdthesis keeps its school. Anything
+# else (publisher, address, location, series, pages, ...) is dropped.
+MINIMAL_VENUE_FIELDS = {
+    'article': {'journal'},
+    'inproceedings': {'booktitle'},
+    'conference': {'booktitle'},
+    'incollection': {'booktitle'},
+    'inbook': {'booktitle'},
+    'proceedings': {'booktitle'},
+    'book': {'publisher'},
+    'booklet': set(),
+    'techreport': {'institution'},
+    'phdthesis': {'school'},
+    'mastersthesis': {'school'},
+    'manual': {'organization'},
+    # @misc has no venue field of its own, so a publisher there is the venue --
+    # unlike on @inproceedings, where the booktitle already says where it appeared
+    # and the publisher is just 'USENIX Association' taking up space.
+    'misc': {'publisher'},
+    'unpublished': set(),
+}
 
-    # see if any known_venues perfectly match (in case `venues.bib` changed):
-    if venue in known_venues:
-        return known_venues[venue]
+# Entry types we don't know about keep any plausible venue field, so an unusual
+# type never silently loses the only thing saying where it was published.
+MINIMAL_VENUE_FALLBACK = {'journal', 'booktitle', 'institution', 'school',
+                          'publisher', 'organization'}
+
+def minimal_fields_for(entry_type):
+    venue_fields = MINIMAL_VENUE_FIELDS.get(entry_type.lower(), MINIMAL_VENUE_FALLBACK)
+    return MINIMAL_FIELDS | venue_fields
+
+def remember(state, venue, abbrev, persist=False):
+    """
+    Remember a decision for the rest of this run, and optionally on disk.
+    """
+    state['decisions'][venue] = abbrev
+    if persist:
+        state['persistent'][venue] = abbrev
+        if state['cache_file']:
+            with open(state['cache_file'], 'w', encoding='utf-8') as f:
+                json.dump(state['persistent'], f, indent=4)
+
+def prompt(state, question):
+    """
+    Ask the user something, returning None if we cannot (or should not) prompt.
+    """
+    if not state['interactive']:
+        return None
+    try:
+        return input(question).strip()
+    except EOFError:
+        # No one is listening (piped stdin): stop asking and take the defaults
+        state['interactive'] = False
+        return None
+
+def fuzzy_match_and_ask(venue, known_venues, state):
+    """
+    Fuzzy match against known_venues {full_name: abbreviation}, confirming with
+    the user. Returns None if nothing matched or the user rejected the match.
+    """
+    if not known_venues:
+        return None # nothing to match against without --venues-bib
+
+    if not state['interactive']:
+        return None # a fuzzy match is only ever applied once confirmed
 
     # Clean the venue string a bit to avoid fuzzy matching on years/dates/cities
     # e.g., 'Proceedings of the 12th USENIX...' -> 'Proceedings of the USENIX...'
     clean_venue = re.sub(r'\b(19|20)\d{2}\b', '', venue)  # remove years
     clean_venue = re.sub(r'\d+(st|nd|rd|th)\b', '', clean_venue) # remove 12th, 1st
-    
+
     # else fuzzy match against known_venues keys
     best_match, score = process.extractOne(clean_venue, list(known_venues.keys()), scorer=fuzz.token_set_ratio)
-    
+
     if score > 80: # configurable threshold
         mapped_abbr = known_venues[best_match]
         print(f"\n[Fuzzy Match]")
         print(f"Original venue: '{venue}'")
         print(f"Matched with:   '{best_match}' (score: {score})")
-        
+
         while True:
-            ans = input(f"Replace with '{mapped_abbr}'? [y/n/a(lways)] > ").strip().lower()
+            ans = prompt(state, f"Replace with '{mapped_abbr}'? [y/n/a(lways)] > ")
+            if ans is None:
+                return None
+            ans = ans.lower()
             if ans in ('y', 'a', 'yes', 'always'):
-                if ans in ('a', 'always'):
-                    # Save it for future queries
-                    saved_mappings[venue] = mapped_abbr
-                    with open(saved_mappings_file, 'w', encoding='utf-8') as f:
-                        json.dump(saved_mappings, f, indent=4)
+                # 'always' also survives future runs
+                remember(state, venue, mapped_abbr, persist=ans in ('a', 'always'))
                 return mapped_abbr
             elif ans in ('n', 'no'):
-                # remember that we said 'no' so it doesn't ask again this run
-                saved_mappings[venue] = venue
-                return venue
-    
-    return venue
+                return None
+            else:
+                print("Please answer 'y' (once), 'n' (no), or 'a' (always).")
+
+    return None
+
+def ask_for_abbreviation(venue, suggestion, state):
+    """
+    Last resort: we could not map this venue ourselves, so let the user type an
+    acronym for it. Typed acronyms are remembered on disk for future runs.
+    """
+    print(f"\n[No Match]")
+    print(f"Original venue: '{venue}'")
+    if suggestion != venue:
+        print(f"Best effort:    '{suggestion}'")
+
+    ans = prompt(state, "Acronym? [type one / Enter to keep best effort / ! to stop asking] > ")
+    if ans is None or ans == '!':
+        if ans == '!':
+            state['interactive'] = False
+        return suggestion
+    if not ans:
+        # remember that we passed on this one so it doesn't ask again this run
+        remember(state, venue, suggestion)
+        return suggestion
+
+    remember(state, venue, ans, persist=True)
+    return ans
+
+def resolve_venue(venue, venue_map, known_venues, state):
+    """
+    Map a booktitle/journal onto its acronym, asking the user when we can't.
+    """
+    # Custom exact replacements from --venues win over everything
+    if venue in venue_map:
+        return venue_map[venue]
+
+    # Decisions from earlier runs, or from an earlier entry in this run
+    if venue in state['decisions']:
+        return state['decisions'][venue]
+
+    # Exact hit in venues.bib (also covers the case where venues.bib changed)
+    if venue in known_venues:
+        return known_venues[venue]
+
+    matched = fuzzy_match_and_ask(venue, known_venues, state)
+    if matched is not None:
+        return matched
+
+    # Nothing matched. Anything already short is presumably an acronym already.
+    if looks_abbreviated(venue):
+        remember(state, venue, venue)
+        return venue
+
+    suggestion = compress_booktitle(venue)
+    if not state['interactive']:
+        return suggestion
+
+    abbrev = ask_for_abbreviation(venue, suggestion, state)
+    # Let later, similar venues fuzzy match against what the user just taught us
+    if abbrev != venue and abbrev != suggestion:
+        known_venues[venue] = abbrev
+    return abbrev
 
 def main():
     parser = argparse.ArgumentParser(description="Compress a BibTeX file for strict space constraints.")
@@ -168,7 +287,9 @@ def main():
     parser.add_argument("-v", "--venues", help="Custom JSON map of venues.", default=None)
     parser.add_argument("--venues-bib", help="venues.bib containing @string mappings", default=None)
     parser.add_argument("--fuzzy-cache", help="JSON file to store interactive fuzzy match memory", default="fuzzy_cache.json")
+    parser.add_argument("--no-interactive", action="store_true", help="Never prompt; keep the best effort abbreviation for unmatched venues")
     parser.add_argument("--strict-acm", action="store_true", help="Ensure strict compliance with ACM Reference Format")
+    parser.add_argument("--minimal", action="store_true", help="Keep only author, title, year, venue and url/doi; drop every other field")
     parser.add_argument("--firstname-initials", action="store_true", help="Use initials for first names")
     parser.add_argument("--keep-authors", type=int, default=None, help="Keep N authors and replace the rest with et al")
     args = parser.parse_args()
@@ -213,6 +334,15 @@ def main():
         with open(args.fuzzy_cache, 'r', encoding='utf-8') as f:
             fuzzy_cache = json.load(f)
 
+    # 'persistent' is what ends up in the cache file, 'decisions' additionally
+    # holds the venues we passed on, so we only get asked about them once a run.
+    state = {
+        'interactive': not args.no_interactive and sys.stdin.isatty(),
+        'cache_file': args.fuzzy_cache,
+        'persistent': fuzzy_cache,
+        'decisions': dict(fuzzy_cache),
+    }
+
     with open(input_file, 'r', encoding='utf-8') as f:
         bib_database = bibtexparser.load(f)
     
@@ -228,8 +358,14 @@ def main():
         DROP_FIELDS = DROP_FIELDS - acm_required
 
     for entry in bib_database.entries:
-        # Collect keys to remove
-        keys_to_remove = [k for k in entry if k.lower() in DROP_FIELDS]
+        # Collect keys to remove. --minimal flips this around: instead of a list
+        # of fields we know we don't want, we keep a list of the ones we do.
+        if args.minimal:
+            keep = minimal_fields_for(entry.get('ENTRYTYPE', ''))
+            keys_to_remove = [k for k in entry
+                              if k not in ('ENTRYTYPE', 'ID') and k.lower() not in keep]
+        else:
+            keys_to_remove = [k for k in entry if k.lower() in DROP_FIELDS]
         for k in keys_to_remove:
             del entry[k]
             
@@ -242,17 +378,7 @@ def main():
         for field in ('booktitle', 'journal'):
             if field in entry:
                 orig = entry[field].replace('\n', ' ')
-                
-                # Check custom exact replacements first
-                if orig in venue_map:
-                    entry[field] = venue_map[orig]
-                elif orig in fuzzy_cache:
-                    entry[field] = fuzzy_cache[orig]
-                # Then fuzzy process:
-                elif len(venues_bib_mappings) > 0:
-                    entry[field] = fuzzy_match_and_ask(orig, venues_bib_mappings, fuzzy_cache, args.fuzzy_cache)
-                else:
-                    entry[field] = compress_booktitle(orig)
+                entry[field] = resolve_venue(orig, venue_map, venues_bib_mappings, state)
 
     # Write the modified database back using BibTexWriter
     writer = BibTexWriter()
@@ -263,4 +389,9 @@ def main():
     print(f"Saved to {output_file}.")
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        # Acronyms typed so far are already saved in the cache file
+        print("\nAborted.")
+        sys.exit(130)
