@@ -5,6 +5,7 @@ import os
 import json
 import bibtexparser
 from bibtexparser.bwriter import BibTexWriter
+from bibtexparser.bparser import BibTexParser
 from thefuzz import process, fuzz
 
 def get_initial(name_part):
@@ -59,6 +60,31 @@ def compress_authors(author_str, firstname_initials=True, keep_authors=1):
     if keep_authors is not None and len(authors) > keep_authors:
         return ' and '.join(authors[:keep_authors]) + ' and others'
     return ' and '.join(authors)
+
+def keep_authors_arg(value):
+    """argparse type for --keep-authors: a positive integer, or 'all' (no truncation)."""
+    if value.lower() == 'all':
+        return None
+    try:
+        n = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected a number or 'all', got {value!r}")
+    if n < 1:
+        raise argparse.ArgumentTypeError("must be at least 1 (or 'all')")
+    return n
+
+# "Accessed: 2026-02-09", "Last accessed on Jan 5, 2024", ... up to the end of the note.
+# Requires a date-ish token after it so prose like "memory accessed via" is left alone.
+ACCESSED_RE = re.compile(
+    r'\b(?:last\s+)?accessed(?:\s+on)?\s*:?\s*'
+    r'(?=\d|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec))'
+    r'.*$',
+    re.IGNORECASE | re.DOTALL)
+
+def strip_accessed(note):
+    """Remove an 'Accessed: <date>' remark from a note; returns '' if nothing else is left."""
+    stripped = ACCESSED_RE.sub('', note).rstrip(' \t\n;,')
+    return stripped.strip()
 
 def compress_booktitle(title_str):
     """
@@ -152,6 +178,11 @@ MINIMAL_VENUE_FIELDS = {
 # type never silently loses the only thing saying where it was published.
 MINIMAL_VENUE_FALLBACK = {'journal', 'booktitle', 'institution', 'school',
                           'publisher', 'organization'}
+
+WEB_ENTRY_TYPES = {'online', 'misc', 'electronic', 'www'}
+
+def has_url(value):
+    return bool(re.search(r'\\url\{|https?://', value))
 
 def minimal_fields_for(entry_type):
     venue_fields = MINIMAL_VENUE_FIELDS.get(entry_type.lower(), MINIMAL_VENUE_FALLBACK)
@@ -291,7 +322,8 @@ def main():
     parser.add_argument("--strict-acm", action="store_true", help="Ensure strict compliance with ACM Reference Format")
     parser.add_argument("--minimal", action="store_true", help="Keep only author, title, year, venue and url/doi; drop every other field")
     parser.add_argument("--firstname-initials", action="store_true", help="Use initials for first names")
-    parser.add_argument("--keep-authors", type=int, default=None, help="Keep N authors and replace the rest with et al")
+    parser.add_argument("--keep-authors", type=keep_authors_arg, default=None, metavar="N|all",
+                        help="Keep N authors and replace the rest with et al; 'all' disables truncation")
     args = parser.parse_args()
 
     firstname_initials = not args.strict_acm
@@ -344,14 +376,17 @@ def main():
     }
 
     with open(input_file, 'r', encoding='utf-8') as f:
-        bib_database = bibtexparser.load(f)
+        # By default bibtexparser silently drops entries of non-standard types
+        # such as @online, which would make them vanish from the output.
+        parser = BibTexParser(common_strings=True, ignore_nonstandard_types=False)
+        bib_database = bibtexparser.load(f, parser)
     
     # Fields to strip to save maximum space while keeping ACM compatibility
     # ACM technically requires some fields but for tight constraints, many are dropped.
     DROP_FIELDS = {'abstract', 'keywords', 'url', 'doi', 'isbn', 'issn', 
                    'month', 'address', 'location', 'publisher', 'numpages', 
                    'issue_date', 'series', 'pages', 'volume', 'number', 
-                   'issue', 'articleno', 'editor', 'organization'}
+                   'issue', 'articleno', 'editor', 'organization', 'urldate', 'day'}
                    
     if args.strict_acm:
         acm_required = {'doi', 'address', 'location', 'publisher', 'pages', 'articleno', 'volume', 'number', 'issue', 'numpages'}
@@ -366,9 +401,21 @@ def main():
                               if k not in ('ENTRYTYPE', 'ID') and k.lower() not in keep]
         else:
             keys_to_remove = [k for k in entry if k.lower() in DROP_FIELDS]
+            # For web resources the URL is the only way to find them again, so
+            # keep it, unless howpublished already carries one.
+            if entry.get('ENTRYTYPE', '').lower() in WEB_ENTRY_TYPES and not has_url(entry.get('howpublished', '')):
+                keys_to_remove = [k for k in keys_to_remove if k.lower() != 'url']
         for k in keys_to_remove:
             del entry[k]
-            
+
+        # Access dates take up space and add nothing for the reader
+        for k in [k for k in entry if k.lower() == 'note']:
+            cleaned = strip_accessed(entry[k])
+            if cleaned:
+                entry[k] = cleaned
+            else:
+                del entry[k]
+
         # Compress fields if they exist
         if 'author' in entry:
             if firstname_initials or keep_authors is not None:

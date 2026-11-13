@@ -6,12 +6,14 @@ Python tool to aggressively compress BibTeX files in terrible formatting require
 
 ## Features
 
-- **Field Stripping**: drops fields like `abstract`, `keywords`, `url`, `doi`, `isbn`, `issn`, `month`, `address`, `location`, `publisher`, `numpages`, `issue_date`, `series`, `pages`, `volume`, `number`, `issue`, `articleno`, `editor`, `organization`.
+- **Field Stripping**: drops fields like `abstract`, `keywords`, `url`, `doi`, `isbn`, `issn`, `month`, `address`, `location`, `publisher`, `numpages`, `issue_date`, `series`, `pages`, `volume`, `number`, `issue`, `articleno`, `editor`, `organization`, `urldate`, `day`.
+  - Keeps `url` for web entries (`@online`, `@misc`, ...) unless `howpublished` already holds the link, since it is the only way to find them again.
+  - Strips `Accessed: <date>` remarks from `note` fields (dropping the note if nothing else is left).
   - Option to retain ACM Reference Format required fields (like `doi`, `publisher`, `pages`, `volume`, etc.) via the `--strict-acm` flag.
   - `--minimal` keeps *only* what a reader needs to find the paper again: **author, title, year, venue, and `url`/`doi`**. 
 - **Author Minimization**:
   - Automatically abbreviates first names (`Santosh Nagarakatte` → `S. Nagarakatte`). Toggleable via `--firstname-initials`.
-  - Automatically truncates author lists to 1 author (`FirstAuthor and others`) by default. Override the count via `--keep-authors N`.
+  - Automatically truncates author lists to 1 author (`FirstAuthor and others`) by default. Override the count via `--keep-authors N`, or disable truncation with `--keep-authors all`.
   - Disable minimization completely by using `--strict-acm` (unless explicitly overridden by the flags above).
 - **Venue Abbreviation**: 
   - Can map standard journal/conference strings into tight acronyms via `--venues` (JSON map) or `--venues-bib` (`@string` definitions).
@@ -31,8 +33,12 @@ Python tool to aggressively compress BibTeX files in terrible formatting require
 ## Setup
 
 ```bash
-pip install bibtexparser thefuzz
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 ```
+
+Note: the script uses the bibtexparser 1.x API, so `requirements.txt` pins `bibtexparser<2`.
 
 ## Usage
 
@@ -70,4 +76,4 @@ Arguments _after_ `--strict-acm` will override that flag.
 | `--strict-acm` | Keep the fields the ACM Reference Format requires, and leave author lists alone. |
 | `--minimal` | Keep only author, title, year, venue and `url`/`doi`; drop every other field. |
 | `--firstname-initials` | Shorten first names to initials. |
-| `--keep-authors N` | Keep `N` authors and replace the rest with `and others`. |
+| `--keep-authors N\|all` | Keep `N` authors and replace the rest with `and others`. `all` keeps every author. |

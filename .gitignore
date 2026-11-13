@@ -12,6 +12,7 @@
 !*.py
 !.gitignore
 !README.md
+!requirements.txt
 
 # Explictly allow mapping memories
 !fuzzy_cache.json
